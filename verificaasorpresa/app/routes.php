@@ -1,27 +1,33 @@
 <?php
 
-declare(strict_types=1);
-
-use App\Application\Actions\User\ListUsersAction;
-use App\Application\Actions\User\ViewUserAction;
 use Psr\Http\Message\ResponseInterface as Response;
 use Psr\Http\Message\ServerRequestInterface as Request;
 use Slim\App;
-use Slim\Interfaces\RouteCollectorProxyInterface as Group;
 
 return function (App $app) {
-    $app->options('/{routes:.*}', function (Request $request, Response $response) {
-        // CORS Pre-Flight OPTIONS Request Handler
-        return $response;
-    });
 
-    $app->get('/', function (Request $request, Response $response) {
-        $response->getBody()->write('Hello world!');
-        return $response;
-    });
+    // QUERY 1: Trovare i pnome dei pezzi per cui esiste un qualche fornitore
+    $app->get('/1', function (Request $request, Response $response) {
+        $db = $this->get(PDO::class);
 
-    $app->group('/users', function (Group $group) {
-        $group->get('', ListUsersAction::class);
-        $group->get('/{id}', ViewUserAction::class);
+        // SQL basato esattamente sulle tabelle del tuo dump (Pezzi e Catalogo)
+        $sql = "SELECT DISTINCT P.pnome 
+                FROM Pezzi P 
+                INNER JOIN Catalogo C ON P.pid = C.pid";
+
+        try {
+            $stmt = $db->query($sql);
+            $result = $stmt->fetchAll();
+
+            // Risposta in formato application/json come richiesto
+            $response->getBody()->write(json_encode($result));
+            return $response
+                ->withHeader('Content-Type', 'application/json')
+                ->withStatus(200);
+
+        } catch (PDOException $e) {
+            $response->getBody()->write(json_encode(["error" => $e->getMessage()]));
+            return $response->withStatus(500);
+        }
     });
 };
