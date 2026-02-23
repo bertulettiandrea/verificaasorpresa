@@ -1,33 +1,61 @@
 <?php
 
-use Psr\Http\Message\ResponseInterface as Response;
-use Psr\Http\Message\ServerRequestInterface as Request;
-use Slim\App;
+declare(strict_types=1);
 
-return function (App $app) {
+use App\Application\Handlers\HttpErrorHandler;
+use App\Application\Handlers\ShutdownHandler;
+use App\Application\ResponseEmitter\ResponseEmitter;
+use App\Application\Settings\SettingsInterface;
+use DI\ContainerBuilder;
+use Slim\Factory\AppFactory;
+use Slim\Factory\ServerRequestCreatorFactory;
 
-    // QUERY 1: Trovare i pnome dei pezzi per cui esiste un qualche fornitore
-    $app->get('/1', function (Request $request, Response $response) {
-        $db = $this->get(PDO::class);
+require __DIR__ . '/../vendor/autoload.php';
 
-        // SQL basato esattamente sulle tabelle del tuo dump (Pezzi e Catalogo)
-        $sql = "SELECT DISTINCT P.pnome 
-                FROM Pezzi P 
-                INNER JOIN Catalogo C ON P.pid = C.pid";
+$containerBuilder = new ContainerBuilder();
 
-        try {
-            $stmt = $db->query($sql);
-            $result = $stmt->fetchAll();
+if (false) {
+    $containerBuilder->enableCompilation(__DIR__ . '/../var/cache');
+}
 
-            // Risposta in formato application/json come richiesto
-            $response->getBody()->write(json_encode($result));
-            return $response
-                ->withHeader('Content-Type', 'application/json')
-                ->withStatus(200);
+$settings = require __DIR__ . '/../app/settings.php';
+$settings($containerBuilder);
 
-        } catch (PDOException $e) {
-            $response->getBody()->write(json_encode(["error" => $e->getMessage()]));
-            return $response->withStatus(500);
-        }
-    });
-};
+$dependencies = require __DIR__ . '/../app/dependencies.php';
+$dependencies($containerBuilder);
+
+$repositories = require __DIR__ . '/../app/repositories.php';
+$repositories($containerBuilder);
+
+$container = $containerBuilder->build();
+
+AppFactory::setContainer($container);
+$app = AppFactory::create();
+
+$callableResolver = $app->getCallableResolver();
+$responseFactory = $app->getResponseFactory();
+
+$middleware = require __DIR__ . '/../app/middleware.php';
+$middleware($app);
+
+$routes = require __DIR__ . '/../app/routes.php';
+$routes($app);
+
+$settings = $container->get(SettingsInterface::class);
+$displayErrorDetails = $settings->get('displayErrorDetails');
+$logError = $settings->get('logError');
+$logErrorDetails = $settings->get('logErrorDetails');
+
+$errorMiddleware = $app->addErrorMiddleware($displayErrorDetails, $logError, $logErrorDetails);
+$errorHandler = new HttpErrorHandler($callableResolver, $responseFactory);
+$errorMiddleware->setDefaultErrorHandler($errorHandler);
+
+$serverRequestCreator = ServerRequestCreatorFactory::create();
+$request = $serverRequestCreator->createServerRequestFromGlobals();
+
+$shutdownHandler = new ShutdownHandler($request, $errorHandler, $displayErrorDetails);
+register_shutdown_function($shutdownHandler);
+
+$response = $app->handle($request);
+$responseEmitter = new ResponseEmitter();
+$responseEmitter->emit($response);
